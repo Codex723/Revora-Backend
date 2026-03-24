@@ -1,5 +1,8 @@
 import { NextFunction, Request, Response } from 'express';
 import { Pool } from 'pg';
+import request from 'supertest';
+import app from '../index';
+import { closePool } from '../db/client';
 import { AppError, ErrorCode } from '../lib/errors';
 import { errorHandler } from '../middleware/errorHandler';
 import {
@@ -27,6 +30,10 @@ function createResponseMocks(): {
     jsonMock,
   };
 }
+
+afterAll(async () => {
+  await closePool();
+});
 
 describe('mapHealthDependencyFailure', () => {
   it('returns a sanitized service-unavailable error for database failures', () => {
@@ -59,9 +66,9 @@ describe('mapHealthDependencyFailure', () => {
 describe('createHealthRouter', () => {
   it('registers the ready route', () => {
     const router = createHealthRouter({ query: jest.fn() } as unknown as Pick<Pool, 'query'>);
-    const routeLayer = (router as unknown as { stack: Array<{ route?: { path?: string } }> }).stack.find(
-      (layer) => layer.route?.path,
-    );
+    const routeLayer = (
+      router as unknown as { stack: Array<{ route?: { path?: string } }> }
+    ).stack.find((layer) => layer.route?.path);
 
     expect(routeLayer?.route?.path).toBe('/ready');
   });
@@ -180,7 +187,12 @@ describe('Health Router', () => {
     );
 
     const { res: errorRes, statusMock, jsonMock } = createResponseMocks();
-    errorHandler(nextErrors[0], { requestId: 'health-rid-1' } as Request, errorRes as unknown as Response, jest.fn());
+    errorHandler(
+      nextErrors[0],
+      { requestId: 'health-rid-1' } as Request,
+      errorRes as unknown as Response,
+      jest.fn(),
+    );
 
     expect(statusMock).toHaveBeenCalledWith(503);
     expect(jsonMock).toHaveBeenCalledWith({
@@ -191,5 +203,37 @@ describe('Health Router', () => {
     });
 
     consoleErrorSpy.mockRestore();
+  });
+});
+
+describe('API Version Prefix Consistency tests', () => {
+  it('should resolve /health without API prefix', async () => {
+    const res = await request(app).get('/health');
+    expect([200, 503]).toContain(res.status);
+  });
+
+  it('should resolve api routes with API_VERSION_PREFIX', async () => {
+    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+    const res = await request(app).get(`${prefix}/overview`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('name', 'Stellar RevenueShare (Revora) Backend');
+  });
+
+  it('should return 404 for api routes without prefix', async () => {
+    const res = await request(app).get('/overview');
+    expect(res.status).toBe(404);
+  });
+
+  it('should correctly scope protected endpoints under the prefix', async () => {
+    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+    const res = await request(app).post(
+      `${prefix}/vaults/vault-1/milestones/milestone-1/validate`,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('should 404 for protected endpoints if prefix is lacking', async () => {
+    const res = await request(app).post('/vaults/vault-1/milestones/milestone-1/validate');
+    expect(res.status).toBe(404);
   });
 });

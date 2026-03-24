@@ -18,6 +18,11 @@ import {
 } from './vaults/milestoneValidationRoute';
 
 const port = process.env.PORT ?? 3000;
+/**
+ * @dev The global prefix applied to all business logic routers.
+ * Defaults to `/api/v1` if `process.env.API_VERSION_PREFIX` is not supplied.
+ * Crucial for preventing route conflict and ensuring reliable downstream tooling.
+ */
 const API_VERSION_PREFIX = process.env.API_VERSION_PREFIX ?? '/api/v1';
 
 class InMemoryMilestoneRepository implements MilestoneRepository {
@@ -108,7 +113,7 @@ class ConsoleDomainEventPublisher implements DomainEventPublisher {
 
 const requireAuth: RequestHandler = (
   req: Request,
-  res: Response,
+  _res: Response,
   next: NextFunction,
 ): void => {
   const userId = req.header('x-user-id');
@@ -164,6 +169,10 @@ function createMilestoneDependencies() {
  * - only `AppError` instances are allowed to control client-visible messages;
  * - unknown failures are sanitized by the global error handler;
  * - request ids are generated per request to correlate server-side logs.
+ *
+ * Operational note:
+ * - `/health` remains intentionally un-versioned for load balancers/orchestrators.
+ * - business logic routes remain scoped under `API_VERSION_PREFIX`.
  */
 export function createApp(): express.Express {
   const app = express();
@@ -213,6 +222,8 @@ export function createApp(): express.Express {
   return app;
 }
 
+const app = createApp();
+
 async function shutdown(signal: string): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(`\n[server] ${signal} shutting down`);
@@ -221,8 +232,6 @@ async function shutdown(signal: string): Promise<void> {
 }
 
 if (require.main === module) {
-  const app = createApp();
-
   process.on('SIGTERM', () => {
     void shutdown('SIGTERM');
   });
@@ -230,8 +239,12 @@ if (require.main === module) {
     void shutdown('SIGINT');
   });
 
-  app.listen(port, () => {
-    // eslint-disable-next-line no-console
-    console.log(`revora-backend listening on http://localhost:${port}`);
-  });
+  if (process.env.NODE_ENV !== 'test') {
+    app.listen(port, () => {
+      // eslint-disable-next-line no-console
+      console.log(`revora-backend listening on http://localhost:${port}`);
+    });
+  }
 }
+
+export default app;
