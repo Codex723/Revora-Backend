@@ -12,6 +12,7 @@ import {
   MilestoneValidationEventRepository,
   VerifierAssignmentRepository,
 } from "./vaults/milestoneValidationRoute";
+import { createWebhookRouter } from "./routes/webhooks";
 
 const app = express();
 const port = process.env.PORT ?? 3000;
@@ -180,6 +181,17 @@ apiRouter.get('/overview', (_req: Request, res: Response) => {
       "Backend API skeleton for tokenized revenue-sharing on Stellar (offerings, investments, revenue distribution).",
   });
 });
+
+/**
+ * @notice Webhook receiver endpoint with signature verification.
+ * @dev Secured with HMAC-SHA256 signature verification to ensure webhook authenticity.
+ * Configure WEBHOOK_SECRET environment variable for production use.
+ */
+const webhookSecret = process.env.WEBHOOK_SECRET ?? 'development-webhook-secret';
+app.use('/webhooks', createWebhookRouter({
+  secret: webhookSecret,
+  requireTimestamp: process.env.NODE_ENV === 'production',
+}));
 
 const shutdown = async (signal: string) => {
   console.log(`\n[server] ${signal} DB shutting down…`);
