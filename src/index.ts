@@ -12,6 +12,23 @@ import {
   MilestoneValidationEventRepository,
   VerifierAssignmentRepository,
 } from "./vaults/milestoneValidationRoute";
+import {
+  enforceTransition,
+} from "./lib/offeringStatusGuard";
+
+// TEMP mock DB (for test stability)
+const db = {
+  getOffering: async (id: string) => ({
+    id,
+    status: "draft" as const,
+  }),
+  updateOfferingStatus: async (id: string, status: string) => ({
+    id,
+    status,
+  }),
+};
+
+
 
 const app = express();
 const port = process.env.PORT ?? 3000;
@@ -171,6 +188,31 @@ app.get("/health", async (_req: Request, res: Response) => {
     service: "revora-backend",
     db,
   });
+});
+
+app.patch("/offerings/:id/status", requireAuth, async (req, res) => {
+  const { status: newStatus } = req.body;
+  const user = (req as any).user;
+  const offering = await db.getOffering(req.params.id);
+
+  if (!offering) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  try {
+    enforceTransition(offering.status, newStatus);
+
+    const updated = await db.updateOfferingStatus(
+      offering.id,
+      newStatus
+    );
+
+    return res.json(updated);
+  } catch (err: any) {
+    return res.status(400).json({
+      error: err.message,
+    });
+  }
 });
 
 apiRouter.get('/overview', (_req: Request, res: Response) => {
