@@ -117,3 +117,152 @@ describe('API Version Prefix Consistency tests', () => {
         expect(res.status).toBe(404);
     });
 });
+
+describe('Revenue Route Schema Validation tests', () => {
+    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+    const VALID_UUID = '00000000-0000-4000-8000-000000000000';
+    const VALID_BODY = {
+        amount: '1000.00',
+        periodStart: '2024-01-01',
+        periodEnd: '2024-03-31',
+    };
+
+    // ── POST /offerings/:id/revenue ──────────────────────────────────────────
+
+    it('valid body + valid UUID param reaches auth guard (returns 401, not 400)', async () => {
+        const res = await request(app)
+            .post(`${prefix}/offerings/${VALID_UUID}/revenue`)
+            .send(VALID_BODY);
+        // Schema validation passes → authMiddleware fires → 401 because no Bearer token
+        expect(res.status).toBe(401);
+    });
+
+    it('missing amount returns 400 ValidationError', async () => {
+        const res = await request(app)
+            .post(`${prefix}/offerings/${VALID_UUID}/revenue`)
+            .send({ periodStart: '2024-01-01', periodEnd: '2024-03-31' });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('ValidationError');
+        expect(res.body.details).toEqual(
+            expect.arrayContaining([expect.stringContaining('amount')])
+        );
+    });
+
+    it('missing periodStart returns 400 ValidationError', async () => {
+        const res = await request(app)
+            .post(`${prefix}/offerings/${VALID_UUID}/revenue`)
+            .send({ amount: '500.00', periodEnd: '2024-03-31' });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('ValidationError');
+        expect(res.body.details).toEqual(
+            expect.arrayContaining([expect.stringContaining('periodStart')])
+        );
+    });
+
+    it('missing periodEnd returns 400 ValidationError', async () => {
+        const res = await request(app)
+            .post(`${prefix}/offerings/${VALID_UUID}/revenue`)
+            .send({ amount: '500.00', periodStart: '2024-01-01' });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('ValidationError');
+        expect(res.body.details).toEqual(
+            expect.arrayContaining([expect.stringContaining('periodEnd')])
+        );
+    });
+
+    it('invalid UUID format in :id param returns 400 ValidationError', async () => {
+        const res = await request(app)
+            .post(`${prefix}/offerings/not-a-uuid/revenue`)
+            .send(VALID_BODY);
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('ValidationError');
+        expect(res.body.details).toEqual(
+            expect.arrayContaining([expect.stringContaining('id')])
+        );
+    });
+
+    it('non-numeric amount returns 400 ValidationError', async () => {
+        const res = await request(app)
+            .post(`${prefix}/offerings/${VALID_UUID}/revenue`)
+            .send({ amount: 'not-a-number', periodStart: '2024-01-01', periodEnd: '2024-03-31' });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('ValidationError');
+        expect(res.body.details).toEqual(
+            expect.arrayContaining([expect.stringContaining('amount')])
+        );
+    });
+
+    it('invalid ISO date for periodStart returns 400 ValidationError', async () => {
+        const res = await request(app)
+            .post(`${prefix}/offerings/${VALID_UUID}/revenue`)
+            .send({ amount: '500.00', periodStart: 'January 1st 2024', periodEnd: '2024-03-31' });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('ValidationError');
+        expect(res.body.details).toEqual(
+            expect.arrayContaining([expect.stringContaining('periodStart')])
+        );
+    });
+
+    it('invalid ISO date for periodEnd returns 400 ValidationError', async () => {
+        const res = await request(app)
+            .post(`${prefix}/offerings/${VALID_UUID}/revenue`)
+            .send({ amount: '500.00', periodStart: '2024-01-01', periodEnd: 'not-a-date' });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('ValidationError');
+        expect(res.body.details).toEqual(
+            expect.arrayContaining([expect.stringContaining('periodEnd')])
+        );
+    });
+
+    it('inverted period dates pass schema validation and reach auth guard (returns 401)', async () => {
+        // Schema validates format only — date ordering (periodEnd > periodStart) is a
+        // RevenueService business rule. Without a token, auth fires first and returns 401.
+        const res = await request(app)
+            .post(`${prefix}/offerings/${VALID_UUID}/revenue`)
+            .send({ amount: '500.00', periodStart: '2024-12-31', periodEnd: '2024-01-01' });
+        expect(res.status).toBe(401);
+    });
+
+    // ── POST /revenue-reports ────────────────────────────────────────────────
+
+    it('POST /revenue-reports: missing offeringId returns 400 ValidationError', async () => {
+        const res = await request(app)
+            .post(`${prefix}/revenue-reports`)
+            .send({ amount: '500.00', periodStart: '2024-01-01', periodEnd: '2024-03-31' });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('ValidationError');
+        expect(res.body.details).toEqual(
+            expect.arrayContaining([expect.stringContaining('offeringId')])
+        );
+    });
+
+    it('POST /revenue-reports: invalid offeringId UUID format returns 400 ValidationError', async () => {
+        const res = await request(app)
+            .post(`${prefix}/revenue-reports`)
+            .send({ offeringId: 'bad-uuid', amount: '500.00', periodStart: '2024-01-01', periodEnd: '2024-03-31' });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('ValidationError');
+        expect(res.body.details).toEqual(
+            expect.arrayContaining([expect.stringContaining('offeringId')])
+        );
+    });
+
+    it('POST /revenue-reports: valid body with no auth returns 401', async () => {
+        const res = await request(app)
+            .post(`${prefix}/revenue-reports`)
+            .send({ offeringId: VALID_UUID, amount: '750.50', periodStart: '2024-01-01', periodEnd: '2024-06-30' });
+        // Schema validation passes; auth gate rejects
+        expect(res.status).toBe(401);
+    });
+
+    it('POST /revenue-reports: leading-dot amount returns 400 ValidationError', async () => {
+        const res = await request(app)
+            .post(`${prefix}/revenue-reports`)
+            .send({ offeringId: VALID_UUID, amount: '.5', periodStart: '2024-01-01', periodEnd: '2024-03-31' });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('ValidationError');
+        expect(res.body.details).toEqual(
+            expect.arrayContaining([expect.stringContaining('amount')])
+        );
+    });
+});

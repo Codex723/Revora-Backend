@@ -2,7 +2,9 @@ import "dotenv/config";
 import express, { Request, Response } from "express";
 import morgan from "morgan";
 import { dbHealth, closePool } from "./db/client";
+import { pool } from "./db/pool";
 import { createCorsMiddleware } from "./middleware/cors";
+import { createRevenueRoutes } from "./routes/revenueRoutes";
 import {
   createMilestoneValidationRouter,
   DomainEventPublisher,
@@ -159,6 +161,14 @@ apiRouter.use(
     domainEventPublisher,
   }),
 );
+
+/**
+ * @notice Revenue report submission endpoints under the versioned API prefix.
+ * @dev Uses the singleton pool from ./db/pool. Schema validation (params, body) is
+ *      applied internally by createRevenueRoutes before the auth middleware fires,
+ *      ensuring invalid-format requests are rejected without performing JWT verification.
+ */
+apiRouter.use(createRevenueRoutes(pool));
 
 /**
  * @notice Operational route explicitly bypassing the API prefix boundary.
