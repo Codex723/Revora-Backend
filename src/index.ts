@@ -3,6 +3,7 @@ import express, { Request, Response } from "express";
 import morgan from "morgan";
 import { dbHealth, closePool } from "./db/client";
 import { createCorsMiddleware } from "./middleware/cors";
+import { requestIdMiddleware } from "./middleware/requestId";
 import {
   createMilestoneValidationRouter,
   DomainEventPublisher,
@@ -162,6 +163,7 @@ const milestoneValidationEventRepository =
 const domainEventPublisher = new ConsoleDomainEventPublisher();
 
 app.use(createCorsMiddleware());
+app.use(requestIdMiddleware());
 app.use(express.json());
 app.use(morgan("dev"));
 /**
