@@ -4,6 +4,7 @@ import morgan from "morgan";
 import { dbHealth, closePool } from "./db/client";
 import { createCorsMiddleware } from "./middleware/cors";
 import { requestIdMiddleware } from "./middleware/requestId";
+import { errorHandler } from "./middleware/errorHandler";
 import {
   createMilestoneValidationRouter,
   DomainEventPublisher,
@@ -267,6 +268,12 @@ const shutdown = async (signal: string) => {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+
+/**
+ * @notice Global error handler must be registered AFTER all routes.
+ * @dev This ensures all unhandled errors from any route are caught here.
+ */
+app.use(errorHandler);
 
 if (process.env.NODE_ENV !== "test") {
   app.listen(port, () => {

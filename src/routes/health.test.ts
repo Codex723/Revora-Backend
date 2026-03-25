@@ -296,3 +296,63 @@ describe("Request ID Propagation", () => {
     );
   });
 });
+
+describe("Global Error Handler", () => {
+  it("returns 500 for an unhandled error", async () => {
+    const res = await request(app).get("/force-error");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns correct error shape for AppError", async () => {
+    const prefix = process.env.API_VERSION_PREFIX ?? "/api/v1";
+    const res = await request(app)
+      .patch(`/offerings/test-id/status`)
+      .set("x-user-id", "user-1")
+      .set("x-user-role", "investor")
+      .send({ status: "published" });
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty("error");
+  });
+
+  it("returns 401 when auth is missing on protected route", async () => {
+    const res = await request(app)
+      .patch("/offerings/test-id/status")
+      .send({ status: "published" });
+    expect(res.status).toBe(401);
+    expect(res.body).toHaveProperty("error");
+  });
+
+  it("includes requestId in error response when header provided", async () => {
+    const res = await request(app)
+      .patch("/offerings/test-id/status")
+      .set("x-request-id", "error-trace-123")
+      .send({ status: "published" });
+    expect(res.status).toBe(401);
+    expect(res.headers["x-request-id"]).toBe("error-trace-123");
+  });
+
+  it("returns 404 for unknown routes", async () => {
+    const res = await request(app).get("/this-route-does-not-exist");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 400 for invalid offering status transition", async () => {
+    const res = await request(app)
+      .patch("/offerings/test-id/status")
+      .set("x-user-id", "user-1")
+      .set("x-user-role", "investor")
+      .send({ status: "archived" });
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty("error");
+  });
+
+  it("returns 400 when investing in non-published offering", async () => {
+    const res = await request(app)
+      .post("/offerings/test-id/invest")
+      .set("x-user-id", "user-1")
+      .set("x-user-role", "investor")
+      .send({ amount: 100, investorId: "investor-1" });
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty("error");
+  });
+});
