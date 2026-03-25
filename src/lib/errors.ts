@@ -128,6 +128,36 @@ export const Errors = {
     createError(ErrorCode.INTERNAL_ERROR, message, 500, details),
 };
 
+// ─── UniqueConstraintError ────────────────────────────────────────────────────
+
+/**
+ * Thrown when a database-level uniqueness violation occurs.
+ *
+ * Wraps PostgreSQL error code `23505` (`unique_violation`) into a structured
+ * domain error so that handlers can catch one type instead of parsing raw
+ * PostgreSQL error codes.
+ *
+ * @property field - The column name that was violated (e.g. `"email"`).
+ *
+ * @example
+ *   throw new UniqueConstraintError('email');
+ *   // error.message === 'Duplicate value for field: email'
+ *   // error.field   === 'email'
+ *   // error instanceof UniqueConstraintError === true
+ */
+export class UniqueConstraintError extends Error {
+  readonly field: string;
+  override readonly name = 'UniqueConstraintError';
+
+  constructor(field: string) {
+    super(`Duplicate value for field: ${field}`);
+    this.field = field;
+    // Restore prototype chain so `instanceof UniqueConstraintError` works
+    // correctly after TypeScript transpiles `extends Error`.
+    Object.setPrototypeOf(this, UniqueConstraintError.prototype);
+  }
+}
+
 // ─── Route helpers ────────────────────────────────────────────────────────────
 
 /**
