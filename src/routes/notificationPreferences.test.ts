@@ -2,7 +2,6 @@ import { NextFunction, Response } from 'express';
 import { createNotificationPreferencesRouter } from './notificationPreferences';
 import {
   NotificationPreferences,
-  NotificationPreferencesRepository,
   UpdateNotificationPreferencesInput,
 } from '../db/repositories/notificationPreferencesRepository';
 
@@ -33,19 +32,18 @@ class InMemoryNotificationPreferencesRepository {
   }
 }
 
-class MockResponse {
-  statusCode = 200;
-  payload: unknown;
+function makeReq(user?: { id: string }, body: unknown = {}) {
+  return { user, body } as { user?: { id: string }; body: unknown };
+}
 
-  status(code: number): this {
-    this.statusCode = code;
-    return this;
-  }
-
-  json(payload: unknown): this {
-    this.payload = payload;
-    return this;
-  }
+function makeRes() {
+  let statusCode = 200;
+  let jsonData: unknown = null;
+  return {
+    status(code: number) { statusCode = code; return this; },
+    json(obj: unknown) { jsonData = obj; return this; },
+    _get() { return { statusCode, jsonData }; }
+  } as unknown as Response & { _get(): { statusCode: number; jsonData: unknown } };
 }
 
 const createAuthMiddleware =
