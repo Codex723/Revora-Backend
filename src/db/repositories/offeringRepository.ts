@@ -18,6 +18,7 @@ export type OfferingStatus =
  */
 export interface Offering {
   id: string;
+  contract_address?: string;
   issuer_user_id?: string;
   issuer_id?: string;
   name?: string;
@@ -145,6 +146,39 @@ export class OfferingRepository {
 
     const result: QueryResult<Offering> = await this.db.query(query, values);
     return result.rows.map((row) => this.mapOffering(row));
+  }
+
+  async updateState(
+    id: string,
+    input: UpdateOfferingStateInput
+  ): Promise<Offering | null> {
+    const fields: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+
+    if (input.status !== undefined) {
+      fields.push(`status = $${idx++}`);
+      values.push(input.status);
+    }
+    if (input.total_raised !== undefined) {
+      fields.push(`total_raised = $${idx++}`);
+      values.push(input.total_raised);
+    }
+
+    if (fields.length === 0) return this.findById(id);
+
+    fields.push(`updated_at = NOW()`);
+    values.push(id);
+
+    const query = `
+      UPDATE offerings
+      SET ${fields.join(', ')}
+      WHERE id = $${idx}
+      RETURNING *
+    `;
+
+    const result: QueryResult<Offering> = await this.db.query(query, values);
+    return result.rows.length > 0 ? this.mapOffering(result.rows[0]) : null;
   }
 
   async update(id: string, partial: UpdateOfferingInput): Promise<Offering | null> {

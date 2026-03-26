@@ -139,6 +139,16 @@ function createMilestoneDependencies() {
 apiRouter.use(createLoginRouter({ loginService }));
 apiRouter.use(createRefreshRouter({ refreshService }));
 
+const offeringRepository = new OfferingRepository(pool);
+apiRouter.use(
+  "/reconciliation",
+  createReconciliationRouter({
+    db: pool,
+    offeringRepo: offeringRepository,
+    requireAuth,
+  }),
+);
+
 /**
  * Main Express application entrypoint.
  *
