@@ -51,7 +51,7 @@ describe('registerHandler', () => {
     svc.result = makeUser();
     const handler = createRegisterHandler(svc as unknown as RegisterService);
     const res = makeRes();
-    await handler(makeReq({ email: 'investor@example.com', password: 'secret123' }), res, (e: unknown) => { throw e; });
+    await handler(makeReq({ email: 'investor@example.com', password: 'StrongSecret123!' }), res, (e: unknown) => { throw e; });
     const { statusCode, jsonData } = res._get();
     assert.strictEqual(statusCode, 201, `expected 201 got ${statusCode}`);
     assert.deepStrictEqual((jsonData as any).user, { id: 'user-1', email: 'investor@example.com', role: 'investor' });
@@ -63,7 +63,7 @@ describe('registerHandler', () => {
     svc.result = makeUser({ email: 'alice@example.com' });
     const handler = createRegisterHandler(svc as unknown as RegisterService);
     const res = makeRes();
-    await handler(makeReq({ email: 'alice@example.com', password: 'password1', name: 'Alice' }), res, (e: unknown) => { throw e; });
+    await handler(makeReq({ email: 'alice@example.com', password: 'StrongPass555!', name: 'Alice' }), res, (e: unknown) => { throw e; });
     assert.strictEqual(res._get().statusCode, 201);
   }
 
@@ -133,7 +133,7 @@ describe('registerHandler', () => {
     svc.shouldThrow = new DuplicateEmailError();
     const handler = createRegisterHandler(svc as unknown as RegisterService);
     const res = makeRes();
-    await handler(makeReq({ email: 'taken@example.com', password: 'password1' }), res, (e: unknown) => { throw e; });
+    await handler(makeReq({ email: 'taken@example.com', password: 'StrongPass666!' }), res, (e: unknown) => { throw e; });
     const { statusCode, jsonData } = res._get();
     assert.strictEqual(statusCode, 409);
     assert.strictEqual((jsonData as any).error, 'Conflict');
@@ -147,7 +147,7 @@ describe('registerHandler', () => {
     const handler = createRegisterHandler(svc as unknown as RegisterService);
     let capturedErr: unknown = null;
     const res = makeRes();
-    await handler(makeReq({ email: 'investor@example.com', password: 'password1' }), res, (e: unknown) => { capturedErr = e; });
+    await handler(makeReq({ email: 'investor@example.com', password: 'StrongPass777!' }), res, (e: unknown) => { capturedErr = e; });
     assert(capturedErr instanceof Error && capturedErr.message === 'unexpected DB failure');
   }
   });
