@@ -7,6 +7,7 @@ import { createCorsMiddleware } from './middleware/cors';
 import { errorHandler } from './middleware/errorHandler';
 import { Errors } from './lib/errors';
 import { createHealthRouter } from './routes/health';
+import createPayoutsRouter, { Payout, PayoutRepo } from './routes/payouts';
 import {
   createMilestoneValidationRouter,
   DomainEventPublisher,
@@ -139,6 +140,17 @@ function createMilestoneDependencies() {
   };
 }
 
+/**
+ * @dev In-memory payout repository for development / demo mode.
+ * In production, this should be replaced by a Postgres-backed implementation.
+ */
+class InMemoryPayoutRepository implements PayoutRepo {
+  constructor(private readonly payouts: Payout[] = []) {}
+  async listPayoutsByInvestor(investorId: string): Promise<Payout[]> {
+    return this.payouts.filter((p) => p.investor_id === investorId);
+  }
+}
+
 apiRouter.use(createLoginRouter({ loginService }));
 apiRouter.use(createRefreshRouter({ refreshService }));
 
@@ -206,6 +218,10 @@ export function createApp(): express.Express {
       ...milestoneDeps,
     }),
   );
+
+  // --- Payout Filters & Pagination (Issue #149) ---
+  const payoutRepo = new InMemoryPayoutRepository();
+  app.use(createPayoutsRouter({ payoutRepo, verifyJWT: requireAuth }));
 
   app.use(API_VERSION_PREFIX, apiRouter);
   app.use((_req, _res, next) => next(Errors.notFound('Route not found')));
