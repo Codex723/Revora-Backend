@@ -69,7 +69,7 @@ export class SessionRepository {
     );
   }
 
-  async createSessionForUser(
+  async createSessionWithId(
     userId: string,
     sessionId: string,
     tokenHash: string,

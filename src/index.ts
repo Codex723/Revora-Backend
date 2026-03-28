@@ -273,6 +273,23 @@ export function createApp(): express.Express {
     });
   });
 
+  // Mount business logic routes
+  apiRouter.use('/startup', startupAuthLimiter, createStartupAuthRouter(pool));
+  apiRouter.use(createLoginRouter({ loginService }));
+  apiRouter.use(createRefreshRouter({ refreshService }));
+
+  const offeringRepository = new OfferingRepository(pool);
+  apiRouter.use(
+    "/reconciliation",
+    createReconciliationRouter({
+      db: pool,
+      offeringRepo: offeringRepository,
+      requireAuth,
+    }),
+  );
+
+  apiRouter.use(createPasswordResetRouter(pool));
+
   apiRouter.use(
     createMilestoneValidationRouter({
       requireAuth,
@@ -351,6 +368,9 @@ async function shutdown(signal: string): Promise<void> {
   process.exit(0);
 }
 
+let server: any;
+export const setServer = (s: any) => { server = s; };
+
 if (require.main === module) {
   process.on('SIGTERM', () => {
     void shutdown('SIGTERM');
@@ -360,7 +380,7 @@ if (require.main === module) {
   });
 
   if (process.env.NODE_ENV !== 'test') {
-    app.listen(port, () => {
+    server = app.listen(port, () => {
       // eslint-disable-next-line no-console
       console.log(`revora-backend listening on http://localhost:${port}`);
     });
