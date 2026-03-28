@@ -2195,6 +2195,7 @@ describe('Graceful Shutdown Completeness', () => {
         expect(mockConsoleLog).toHaveBeenCalledWith('[server] Graceful shutdown complete.');
         expect(mockExit).toHaveBeenCalledWith(0);
     });
+  });
 });
 
 describe("Offering Status Guardrails", () => {
