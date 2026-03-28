@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import express, { NextFunction, Request, RequestHandler, Response } from 'express';
 import morgan from 'morgan';
 import { closePool, dbHealth, query as dbQuery } from './db/client';
@@ -7,6 +7,47 @@ import { createCorsMiddleware } from './middleware/cors';
 import { errorHandler } from './middleware/errorHandler';
 import { Errors } from './lib/errors';
 import { createHealthRouter } from './routes/health';
+
+/**
+ * @dev Classifies failures from Stellar RPC providers (e.g. Horizon) into stable categories.
+ * This ensures that upstream operational issues are not leaked to clients while providing
+ * enough information for internal monitoring and automated failover.
+ */
+export enum StellarRPCFailureClass {
+  TIMEOUT = 'TIMEOUT',
+  RATE_LIMIT = 'RATE_LIMIT',
+  UPSTREAM_ERROR = 'UPSTREAM_ERROR',
+  MALFORMED_RESPONSE = 'MALFORMED_RESPONSE',
+  UNAUTHORIZED = 'UNAUTHORIZED',
+  UNKNOWN = 'UNKNOWN',
+}
+
+/**
+ * @dev Maps raw upstream errors into deterministic failure classes.
+ * 
+ * Security assumptions:
+ * - Upstream error messages are never exposed directly to clients to prevent reconnaissance.
+ * - All classifications are deterministic based on HTTP status codes or error instances.
+ */
+export function classifyStellarRPCFailure(error: unknown): StellarRPCFailureClass {
+  if (error instanceof Error && (error.name === 'AbortError' || error.message.includes('timeout'))) {
+    return StellarRPCFailureClass.TIMEOUT;
+  }
+
+  if (typeof error === 'object' && error !== null) {
+    const status = (error as { status?: number }).status;
+    if (status === 429) return StellarRPCFailureClass.RATE_LIMIT;
+    if (status === 401 || status === 403) return StellarRPCFailureClass.UNAUTHORIZED;
+    if (status && status >= 500) return StellarRPCFailureClass.UPSTREAM_ERROR;
+  }
+
+  if (error instanceof SyntaxError) {
+    return StellarRPCFailureClass.MALFORMED_RESPONSE;
+  }
+
+  return StellarRPCFailureClass.UNKNOWN;
+}
+
 import {
   createMilestoneValidationRouter,
   DomainEventPublisher,
@@ -16,6 +57,18 @@ import {
   MilestoneValidationEventRepository,
   VerifierAssignmentRepository,
 } from './vaults/milestoneValidationRoute';
+import { createLoginRouter } from './auth/login/loginRoute';
+import { createRefreshRouter } from './auth/refresh/refreshRoute';
+import { createReconciliationRouter } from './routes/reconciliationRoutes';
+import { createPasswordResetRouter } from './routes/passwordReset';
+import { OfferingRepository } from './db/repositories/offeringRepository';
+import { pool } from './db/client';
+import { LoginService } from './auth/login/loginService';
+import { RefreshService } from './auth/refresh/refreshService';
+import { UserRepository } from './db/repositories/userRepository';
+import { SessionRepository } from './db/repositories/sessionRepository';
+import { JwtTokenServiceAdapter } from './auth/refresh/tokenServiceAdapter';
+import { RefreshTokenRepositoryAdapter } from './auth/refresh/repositoryAdapter';
 
 const port = process.env.PORT ?? 3000;
 
@@ -101,9 +154,10 @@ const requireAuth: RequestHandler = (
     return;
   }
 
-  (req as Request & { user?: { id: string; role: string } }).user = {
+  (req as Request & { user?: { id: string; role: string; sessionToken: string } }).user = {
     id: userId,
     role,
+    sessionToken: 'static-id-token', // Dummy token for simple auth
   };
 
   next();
@@ -179,10 +233,11 @@ export function createApp(): express.Express {
       req.header('x-request-id') ?? randomUUID();
     next();
   });
-  app.use(createCorsMiddleware());
+  app.use(createCorsMiddleware() as any);
   app.use(express.json());
   app.use(morgan('dev'));
 
+  // --- Routes ---
   app.get('/health', async (_req: Request, res: Response) => {
     const db = await dbHealth();
     res.status(db.healthy ? 200 : 503).json({
@@ -193,6 +248,21 @@ export function createApp(): express.Express {
   });
 
   app.use('/health', createHealthRouter({ query: dbQuery }));
+
+  // --- API Routes ---
+  apiRouter.use(createLoginRouter({ loginService }));
+  apiRouter.use(createRefreshRouter({ refreshService }));
+  
+  apiRouter.use(
+    "/reconciliation",
+    createReconciliationRouter({
+      db: pool,
+      offeringRepo: offeringRepository,
+      requireAuth,
+    }),
+  );
+
+  apiRouter.use(createPasswordResetRouter(pool));
 
   apiRouter.get('/overview', (_req: Request, res: Response) => {
     res.json({
@@ -216,6 +286,13 @@ export function createApp(): express.Express {
 
   return app;
 }
+
+export const __test = {
+  createMilestoneDependencies,
+  InMemoryMilestoneRepository,
+  InMemoryVerifierAssignmentRepository,
+  InMemoryMilestoneValidationEventRepository,
+};
 
 const app = createApp();
 

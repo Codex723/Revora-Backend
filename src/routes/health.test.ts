@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import { Pool } from 'pg';
 import request from 'supertest';
-import app, { __test } from '../index';
+import app, { StellarRPCFailureClass, __test } from '../index';
 import { closePool } from '../db/client';
 import { AppError, ErrorCode } from '../lib/errors';
 import { errorHandler } from '../middleware/errorHandler';
@@ -49,16 +49,52 @@ describe('mapHealthDependencyFailure', () => {
     });
   });
 
-  it('captures the upstream status for deterministic Stellar failures', () => {
-    const mapped = mapHealthDependencyFailure('stellar-horizon', { status: 502 });
+  it('captures the upstream status and failure class for deterministic Stellar failures', () => {
+    const mapped = mapHealthDependencyFailure('stellar-horizon', { status: 429 });
 
     expect(mapped.toResponse()).toEqual({
       code: ErrorCode.SERVICE_UNAVAILABLE,
       message: 'Dependency unavailable',
       details: {
         dependency: 'stellar-horizon',
-        upstreamStatus: 502,
+        failureClass: StellarRPCFailureClass.RATE_LIMIT,
+        upstreamStatus: 429,
       },
+    });
+  });
+
+  it('classifies timeouts correctly', () => {
+    const timeoutErr = new Error('network timeout');
+    timeoutErr.name = 'AbortError';
+    const mapped = mapHealthDependencyFailure('stellar-horizon', timeoutErr);
+
+    expect(mapped.toResponse().details).toMatchObject({
+      failureClass: StellarRPCFailureClass.TIMEOUT,
+    });
+  });
+
+  it('classifies malformed responses correctly', () => {
+    const syntaxErr = new SyntaxError('Unexpected token');
+    const mapped = mapHealthDependencyFailure('stellar-horizon', syntaxErr);
+
+    expect(mapped.toResponse().details).toMatchObject({
+      failureClass: StellarRPCFailureClass.MALFORMED_RESPONSE,
+    });
+  });
+
+  it('classifies unauthorized access correctly', () => {
+    const mapped = mapHealthDependencyFailure('stellar-horizon', { status: 401 });
+
+    expect(mapped.toResponse().details).toMatchObject({
+      failureClass: StellarRPCFailureClass.UNAUTHORIZED,
+    });
+  });
+
+  it('classifies upstream errors correctly', () => {
+    const mapped = mapHealthDependencyFailure('stellar-horizon', { status: 503 });
+
+    expect(mapped.toResponse().details).toMatchObject({
+      failureClass: StellarRPCFailureClass.UPSTREAM_ERROR,
     });
   });
 });
