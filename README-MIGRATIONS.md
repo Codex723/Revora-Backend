@@ -3,7 +3,7 @@
 This project uses a custom raw SQL migration script to manage database schema changes reliably.
 
 ## Structure
-
+ 
 - `src/db/migrations/`: Directory where all `.sql` migration files are stored.
 - `src/db/migrate.ts`: The script that executes pending migrations against the database. 
 
