@@ -1,7 +1,10 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import { Pool } from 'pg';
 import { AppError, Errors } from '../lib/errors';
-import { classifyStellarRPCFailure, StellarRPCFailureClass } from '../index';
+import {
+  classifyStellarRPCFailure,
+  StellarRPCFailureClass,
+} from '../lib/stellarRpcFailure';
 
 export type HealthDependency = 'database' | 'stellar-horizon';
 

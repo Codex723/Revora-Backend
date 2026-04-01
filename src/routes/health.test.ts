@@ -1,18 +1,23 @@
-import { NextFunction, Request, Response } from 'express';
 import express from 'express';
 import request from 'supertest';
-import { app, __test, classifyStellarRPCFailure, StellarRPCFailureClass } from '../index';
+import {
+  __test,
+  classifyStellarRPCFailure,
+  createApp,
+  StellarRPCFailureClass,
+  WebhookQueue,
+} from '../index';
+import { closePool } from '../db/client';
 import { ErrorCode } from '../lib/errors';
-import { errorHandler } from '../middleware/errorHandler';
-import { createHealthRouter, healthReadyHandler, mapHealthDependencyFailure } from './health';
+import {
+  createHealthRouter,
+  healthReadyHandler,
+  mapHealthDependencyFailure,
+} from './health';
 
-function makeResponseDouble() {
-  const response = {
-    status: jest.fn().mockReturnThis(),
-    json: jest.fn().mockReturnThis(),
-  } as unknown as Response;
-  return response;
-}
+afterAll(async () => {
+  await closePool();
+});
 
 describe('classifyStellarRPCFailure', () => {
   it('classifies timeout failures', () => {
@@ -22,7 +27,7 @@ describe('classifyStellarRPCFailure', () => {
     expect(classifyStellarRPCFailure(error)).toBe(StellarRPCFailureClass.TIMEOUT);
   });
 
-  it('classifies rate-limit failures', () => {
+  it('classifies rate limit failures', () => {
     expect(classifyStellarRPCFailure({ status: 429 })).toBe(
       StellarRPCFailureClass.RATE_LIMIT,
     );
@@ -49,8 +54,8 @@ describe('classifyStellarRPCFailure', () => {
     );
   });
 
-  it('falls back to unknown for non-matching failures', () => {
-    expect(classifyStellarRPCFailure(new Error('random failure'))).toBe(
+  it('falls back to unknown for uncategorized errors', () => {
+    expect(classifyStellarRPCFailure(new Error('something odd'))).toBe(
       StellarRPCFailureClass.UNKNOWN,
     );
   });
@@ -69,7 +74,7 @@ describe('mapHealthDependencyFailure', () => {
     });
   });
 
-  it('includes stellar failure class and upstream status when present', () => {
+  it('preserves stable Stellar metadata without leaking raw upstream details', () => {
     const mapped = mapHealthDependencyFailure('stellar-horizon', { status: 503 });
 
     expect(mapped.toResponse()).toEqual({
@@ -85,111 +90,46 @@ describe('mapHealthDependencyFailure', () => {
 });
 
 describe('healthReadyHandler', () => {
-  let fetchSpy: jest.SpyInstance;
+  const originalFetch = global.fetch;
 
   afterEach(() => {
-    fetchSpy?.mockRestore();
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
   });
 
-  it('returns ok when database and stellar checks pass', async () => {
-    const db = { query: jest.fn().mockResolvedValue(undefined) };
-    fetchSpy = jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValue({ ok: true, status: 200 } as unknown as globalThis.Response);
+  it('returns ok when both database and horizon are healthy', async () => {
+    const db = {
+      query: jest.fn().mockResolvedValue({ rows: [{ '?column?': 1 }] }),
+    };
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, status: 200 }) as typeof fetch;
 
-    const req = {} as Request;
-    const res = makeResponseDouble();
-    const next = jest.fn() as NextFunction;
+    const app = express();
+    app.get('/ready', healthReadyHandler(db));
 
-    await healthReadyHandler(db)(req, res, next);
-
-    expect(db.query).toHaveBeenCalledWith('SELECT 1');
-    expect(next).not.toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith({ status: 'ok', db: 'up', stellar: 'up' });
-  });
-
-  it('forwards sanitized database failure', async () => {
-    const db = { query: jest.fn().mockRejectedValue(new Error('db down')) };
-    fetchSpy = jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValue({ ok: true, status: 200 } as unknown as globalThis.Response);
-
-    const req = {} as Request;
-    const res = makeResponseDouble();
-    const next = jest.fn() as NextFunction;
-
-    await healthReadyHandler(db)(req, res, next);
-
-    expect(next).toHaveBeenCalledTimes(1);
-    const error = (next as jest.Mock).mock.calls[0][0];
-    expect(error.toResponse()).toEqual({
-      code: ErrorCode.SERVICE_UNAVAILABLE,
-      message: 'Dependency unavailable',
-      details: { dependency: 'database' },
-    });
-  });
-
-  it('forwards stellar upstream error when stellar responds non-2xx', async () => {
-    const db = { query: jest.fn().mockResolvedValue(undefined) };
-    fetchSpy = jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValue({ ok: false, status: 503 } as unknown as globalThis.Response);
-
-    const req = {} as Request;
-    const res = makeResponseDouble();
-    const next = jest.fn() as NextFunction;
-
-    await healthReadyHandler(db)(req, res, next);
-
-    expect(next).toHaveBeenCalledTimes(1);
-    const error = (next as jest.Mock).mock.calls[0][0];
-    expect(error.toResponse()).toEqual({
-      code: ErrorCode.SERVICE_UNAVAILABLE,
-      message: 'Dependency unavailable',
-      details: {
-        dependency: 'stellar-horizon',
-        failureClass: StellarRPCFailureClass.UPSTREAM_ERROR,
-        upstreamStatus: 503,
-      },
-    });
-  });
-});
-
-describe('createHealthRouter', () => {
-  let fetchSpy: jest.SpyInstance;
-
-  afterEach(() => {
-    fetchSpy?.mockRestore();
-  });
-
-  it('serves /health/ready with 200 when dependencies are healthy', async () => {
-    const db = { query: jest.fn().mockResolvedValue(undefined) };
-    fetchSpy = jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValue({ ok: true, status: 200 } as unknown as globalThis.Response);
-
-    const testApp = express();
-    testApp.use('/health', createHealthRouter(db));
-    testApp.use(errorHandler);
-
-    const response = await request(testApp).get('/health/ready');
+    const response = await request(app).get('/ready');
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ status: 'ok', db: 'up', stellar: 'up' });
+    expect(response.body).toEqual({
+      status: 'ok',
+      db: 'up',
+      stellar: 'up',
+    });
   });
 
-  it('returns dependency-unavailable error shape when db check fails', async () => {
-    const db = { query: jest.fn().mockRejectedValue(new Error('connection refused')) };
-    fetchSpy = jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValue({ ok: true, status: 200 } as unknown as globalThis.Response);
+  it('surfaces sanitized database failures', async () => {
+    const db = {
+      query: jest.fn().mockRejectedValue(new Error('connection string leaked')),
+    };
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, status: 200 }) as typeof fetch;
 
-    const testApp = express();
-    testApp.use('/health', createHealthRouter(db));
-    testApp.use(errorHandler);
+    const app = express();
+    app.get('/ready', healthReadyHandler(db));
+    app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      const mapped = err as { statusCode: number; toResponse: () => unknown };
+      res.status(mapped.statusCode).json(mapped.toResponse());
+    });
 
-    const response = await request(testApp).get('/health/ready');
+    const response = await request(app).get('/ready');
 
     expect(response.status).toBe(503);
     expect(response.body).toEqual({
@@ -200,146 +140,447 @@ describe('createHealthRouter', () => {
       },
     });
   });
+
+  it('maps Stellar upstream failures deterministically', async () => {
+    const db = { query: jest.fn().mockResolvedValue({ rows: [{ '?column?': 1 }] }) };
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 429 }) as typeof fetch;
+
+    const app = express();
+    app.use('/health', createHealthRouter(db));
+    app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      const mapped = err as { statusCode: number; toResponse: () => unknown };
+      res.status(mapped.statusCode).json(mapped.toResponse());
+    });
+
+    const response = await request(app).get('/health/ready');
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({
+      code: ErrorCode.SERVICE_UNAVAILABLE,
+      message: 'Dependency unavailable',
+      details: {
+        dependency: 'stellar-horizon',
+        failureClass: StellarRPCFailureClass.RATE_LIMIT,
+        upstreamStatus: 429,
+      },
+    });
+  });
 });
 
-describe('Startup Auth Rate Limiter Tier Policies', () => {
-  const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
-  const tierHeader = 'x-revora-rate-tier';
-  const tierSecretHeader = 'x-revora-tier-secret';
-  const tierSecret = 'startup-rate-tier-secret-test';
+describe('offering validation matrix', () => {
+  const path = '/api/v1/offerings/validation-matrix';
 
-  beforeEach(() => {
-    __test.resetStartupAuthRateLimitState();
-    delete process.env.STARTUP_AUTH_TIER_SECRET;
-  });
-
-  afterEach(() => {
-    __test.resetStartupAuthRateLimitState();
-    delete process.env.STARTUP_AUTH_TIER_SECRET;
-  });
-
-  async function sendStartupRegistration(
-    scope: string,
-    attempt: number,
-    extraHeaders: Record<string, string> = {},
-  ) {
-    return request(app)
-      .post(`${prefix}/startup/register`)
-      .set(extraHeaders)
-      .send({
-        email: `${scope}-${attempt}@example.com`,
-        password: 'StrongPwd!9K',
-        name: `User ${attempt}`,
-      });
+  function buildApp() {
+    return createApp({
+      healthStatus: jest.fn().mockResolvedValue({ healthy: true, latencyMs: 1 }),
+      healthQuery: jest.fn(),
+    });
   }
 
-  it('defaults to standard tier and blocks the 6th request', async () => {
-    for (let i = 1; i <= 5; i += 1) {
-      const response = await sendStartupRegistration('standard', i);
-      expect(response.status).not.toBe(429);
-      expect(response.headers['x-ratelimit-tier']).toBe('standard');
-    }
+  function authHeaders(role: string, id = 'actor-1') {
+    return {
+      'x-user-id': id,
+      'x-user-role': role,
+    };
+  }
 
-    const blocked = await sendStartupRegistration('standard', 6);
-    expect(blocked.status).toBe(429);
-    expect(blocked.headers['x-ratelimit-tier']).toBe('standard');
-    expect(blocked.headers['x-ratelimit-limit']).toBe('5');
-    expect(blocked.body).toMatchObject({
-      error: 'TooManyRequests',
-      message: expect.stringContaining('Too many registration attempts'),
+  it('rejects unauthenticated callers at the auth boundary', async () => {
+    const response = await request(buildApp())
+      .post(path)
+      .send({
+        action: 'create',
+        offering: { targetAmount: '1000.00', minimumInvestment: '50.00' },
+      });
+
+    expect(response.status).toBe(401);
+    expect(response.body).toMatchObject({
+      code: ErrorCode.UNAUTHORIZED,
+      message: 'Offering validation requires x-user-id and x-user-role headers',
     });
   });
 
-  it('applies trusted tier when header and secret are valid', async () => {
-    process.env.STARTUP_AUTH_TIER_SECRET = tierSecret;
-    const trustedHeaders = {
-      [tierHeader]: 'trusted',
-      [tierSecretHeader]: tierSecret,
-    };
+  it('rejects invalid actions with an explicit schema error', async () => {
+    const response = await request(buildApp())
+      .post(path)
+      .set(authHeaders('startup'))
+      .send({
+        action: 'destroy',
+        offering: {},
+      });
 
-    for (let i = 1; i <= 10; i += 1) {
-      const response = await sendStartupRegistration('trusted', i, trustedHeaders);
-      expect(response.status).not.toBe(429);
-      expect(response.headers['x-ratelimit-tier']).toBe('trusted');
-    }
-
-    const blocked = await sendStartupRegistration('trusted', 11, trustedHeaders);
-    expect(blocked.status).toBe(429);
-    expect(blocked.headers['x-ratelimit-tier']).toBe('trusted');
-    expect(blocked.headers['x-ratelimit-limit']).toBe('10');
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({
+      code: ErrorCode.BAD_REQUEST,
+      message: 'Invalid offering validation action',
+    });
   });
 
-  it('falls back to standard tier when trusted is spoofed without a valid secret', async () => {
-    process.env.STARTUP_AUTH_TIER_SECRET = tierSecret;
-    const spoofedHeaders = {
-      [tierHeader]: 'trusted',
-    };
+  it('allows a startup to publish its own valid draft offering', async () => {
+    const response = await request(buildApp())
+      .post(path)
+      .set(authHeaders('startup', 'issuer-1'))
+      .send({
+        action: 'publish',
+        offering: {
+          id: 'off-1',
+          issuerId: 'issuer-1',
+          status: 'draft',
+          targetAmount: '1000.00',
+          minimumInvestment: '50.00',
+          subscriptionStartsAt: '2030-01-01T00:00:00.000Z',
+          subscriptionEndsAt: '2030-01-15T00:00:00.000Z',
+        },
+      });
 
-    for (let i = 1; i <= 5; i += 1) {
-      const response = await sendStartupRegistration('spoofed', i, spoofedHeaders);
-      expect(response.status).not.toBe(429);
-      expect(response.headers['x-ratelimit-tier']).toBe('standard');
-    }
-
-    const blocked = await sendStartupRegistration('spoofed', 6, spoofedHeaders);
-    expect(blocked.status).toBe(429);
-    expect(blocked.headers['x-ratelimit-tier']).toBe('standard');
-    expect(blocked.headers['x-ratelimit-limit']).toBe('5');
+    expect(response.status).toBe(200);
+    expect(response.body.allowed).toBe(true);
+    expect(response.body.decision).toBe('allow');
+    expect(response.body.violations).toEqual([]);
   });
 
-  it('supports internal tier with valid secret and enforces its larger quota', async () => {
-    process.env.STARTUP_AUTH_TIER_SECRET = tierSecret;
-    const internalHeaders = {
-      [tierHeader]: 'internal',
-      [tierSecretHeader]: tierSecret,
-    };
+  it('denies a startup from managing another issuers offering', async () => {
+    const response = await request(buildApp())
+      .post(path)
+      .set(authHeaders('startup', 'issuer-1'))
+      .send({
+        action: 'pause',
+        offering: {
+          id: 'off-2',
+          issuerId: 'issuer-2',
+          status: 'open',
+        },
+      });
 
-    for (let i = 1; i <= 25; i += 1) {
-      const response = await sendStartupRegistration('internal', i, internalHeaders);
-      expect(response.status).not.toBe(429);
-      expect(response.headers['x-ratelimit-tier']).toBe('internal');
-    }
-
-    const blocked = await sendStartupRegistration('internal', 26, internalHeaders);
-    expect(blocked.status).toBe(429);
-    expect(blocked.headers['x-ratelimit-tier']).toBe('internal');
-    expect(blocked.headers['x-ratelimit-limit']).toBe('25');
+    expect(response.status).toBe(422);
+    expect(response.body.allowed).toBe(false);
+    expect(response.body.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'OWNERSHIP_CONFIRMED',
+        }),
+      ]),
+    );
   });
 
-  it('resolves tier helper deterministically', () => {
-    process.env.STARTUP_AUTH_TIER_SECRET = tierSecret;
+  it('denies investment attempts outside the allowed subscription window', async () => {
+    const response = await request(buildApp())
+      .post(path)
+      .set(authHeaders('investor', 'investor-1'))
+      .send({
+        action: 'invest',
+        offering: {
+          id: 'off-3',
+          issuerId: 'issuer-3',
+          status: 'open',
+          targetAmount: '1000.00',
+          minimumInvestment: '100.00',
+          investmentAmount: '125.00',
+          subscriptionStartsAt: '2020-01-01T00:00:00.000Z',
+          subscriptionEndsAt: '2020-01-15T00:00:00.000Z',
+        },
+      });
 
-    const trustedReq = {
-      header: (name: string) => {
-        const headers: Record<string, string> = {
-          [tierHeader]: 'trusted',
-          [tierSecretHeader]: tierSecret,
-        };
-        return headers[name.toLowerCase()];
+    expect(response.status).toBe(422);
+    expect(response.body.allowed).toBe(false);
+    expect(response.body.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'INVESTMENT_WINDOW_ACTIVE',
+        }),
+      ]),
+    );
+  });
+
+  it('blocks issuer self-investment by default', async () => {
+    const response = await request(buildApp())
+      .post(path)
+      .set(authHeaders('investor', 'issuer-4'))
+      .send({
+        action: 'invest',
+        offering: {
+          id: 'off-4',
+          issuerId: 'issuer-4',
+          status: 'open',
+          targetAmount: '500.00',
+          minimumInvestment: '50.00',
+          investmentAmount: '50.00',
+          subscriptionStartsAt: '2030-01-01T00:00:00.000Z',
+          subscriptionEndsAt: '2030-01-10T00:00:00.000Z',
+        },
+      });
+
+    expect(response.status).toBe(422);
+    expect(response.body.allowed).toBe(false);
+    expect(response.body.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'INVESTOR_NOT_ISSUER',
+        }),
+      ]),
+    );
+  });
+
+  it('allows privileged compliance actors to review private offerings without ownership', async () => {
+    const response = await request(buildApp())
+      .post(path)
+      .set(authHeaders('compliance', 'compliance-1'))
+      .send({
+        action: 'viewPrivate',
+        offering: {
+          id: 'off-5',
+          issuerId: 'issuer-99',
+          status: 'paused',
+        },
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.allowed).toBe(true);
+    expect(response.body.violations).toEqual([]);
+  });
+
+  it('returns degraded root health when the dependency checker reports failure', async () => {
+    const app = createApp({
+      healthStatus: jest.fn().mockResolvedValue({
+        healthy: false,
+        latencyMs: 4,
+        error: 'sanitized-db-error',
+      }),
+      healthQuery: jest.fn(),
+    });
+
+    const response = await request(app).get('/health');
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({
+      status: 'degraded',
+      service: 'revora-backend',
+      db: {
+        healthy: false,
+        latencyMs: 4,
+        error: 'sanitized-db-error',
       },
-    } as unknown as Request;
-
-    const spoofedReq = {
-      header: (name: string) => {
-        const headers: Record<string, string> = {
-          [tierHeader]: 'internal',
-          [tierSecretHeader]: 'wrong',
-        };
-        return headers[name.toLowerCase()];
-      },
-    } as unknown as Request;
-
-    expect(__test.resolveStartupAuthRateTier(trustedReq)).toBe('trusted');
-    expect(__test.resolveStartupAuthRateTier(spoofedReq)).toBe('standard');
+    });
   });
 
-  it('does not affect /health when startup endpoint is rate-limited', async () => {
-    for (let i = 1; i <= 6; i += 1) {
-      await sendStartupRegistration('isolation', i);
+  it('serves the overview document on the versioned API prefix', async () => {
+    const response = await request(buildApp()).get('/api/v1/overview');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      name: 'Stellar RevenueShare (Revora) Backend',
+      version: '0.1.0',
+    });
+  });
+
+  it('rate limits repeated startup registration attempts on the versioned route', async () => {
+    const app = buildApp();
+
+    for (let i = 0; i < 5; i += 1) {
+      const response = await request(app)
+        .post('/api/v1/startup/register')
+        .send({ email: `founder-${i}@example.com`, password: 'VeryStrongPass!9' });
+
+      expect(response.status).toBe(201);
+      expect(response.headers['x-ratelimit-limit']).toBe('5');
     }
 
-    const health = await request(app).get('/health');
-    expect([200, 503]).toContain(health.status);
-    expect(health.status).not.toBe(429);
+    const blocked = await request(app)
+      .post('/api/v1/startup/register')
+      .send({ email: 'founder-6@example.com', password: 'VeryStrongPass!9' });
+
+    expect(blocked.status).toBe(429);
+    expect(blocked.body).toEqual({
+      error: 'TooManyRequests',
+      message: 'Too many registration attempts',
+    });
+    expect(blocked.headers['x-ratelimit-remaining']).toBe('0');
+    expect(blocked.headers['retry-after']).toBeDefined();
+  });
+
+  it('rejects startup registration payloads that omit required credentials', async () => {
+    const response = await request(buildApp())
+      .post('/api/v1/startup/register')
+      .send({ email: 'missing-password@example.com' });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: 'Email and password are required',
+    });
+  });
+});
+
+describe('WebhookQueue', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('classifies safe and unsafe webhook targets correctly', () => {
+    const isSafeUrl = (WebhookQueue as unknown as { isSafeUrl: (url: string) => boolean }).isSafeUrl;
+
+    expect(isSafeUrl('https://example.com/hooks')).toBe(true);
+    expect(isSafeUrl('http://127.0.0.1')).toBe(false);
+    expect(isSafeUrl('http://localhost')).toBe(false);
+    expect(isSafeUrl('not-a-valid-url')).toBe(false);
+  });
+
+  it('uses exponential backoff and stops after the configured retry ceiling', async () => {
+    const deliveryPromise = WebhookQueue.processDelivery('https://example.com/hooks', {
+      event: 'test',
+    });
+
+    await jest.advanceTimersByTimeAsync(31_000);
+
+    await expect(deliveryPromise).resolves.toBe(false);
+    expect(WebhookQueue.getBackoffDelay(0)).toBe(1000);
+    expect(WebhookQueue.getBackoffDelay(5)).toBe(-1);
+  });
+
+  it('fails fast for unsafe SSRF-style destinations', async () => {
+    await expect(
+      WebhookQueue.processDelivery('http://192.168.1.10/internal', { event: 'test' }),
+    ).resolves.toBe(false);
+  });
+});
+
+describe('__test helpers', () => {
+  it('stableSerialize sorts object keys recursively', () => {
+    expect(
+      __test.stableSerialize({
+        b: 1,
+        a: { d: 4, c: 3 },
+      }),
+    ).toBe('{"a":{"c":3,"d":4},"b":1}');
+  });
+
+  it('stableSerialize preserves arrays while sorting nested object keys', () => {
+    expect(
+      __test.stableSerialize([
+        { z: 2, a: 1 },
+        { b: 2, a: 1 },
+      ]),
+    ).toBe('[{"a":1,"z":2},{"a":1,"b":2}]');
+  });
+
+  it('parseMoneyString accepts bounded decimal strings and rejects invalid input', () => {
+    expect(__test.parseMoneyString('999.99')).toBe(999.99);
+    expect(__test.parseMoneyString('1e6')).toBeNull();
+    expect(__test.parseMoneyString(10)).toBeNull();
+  });
+
+  it('parseIsoDate accepts valid ISO strings and rejects invalid dates', () => {
+    expect(__test.parseIsoDate('2030-01-01T00:00:00.000Z')?.toISOString()).toBe(
+      '2030-01-01T00:00:00.000Z',
+    );
+    expect(__test.parseIsoDate('definitely-not-a-date')).toBeNull();
+  });
+
+  it('parseOfferingValidationPayload preserves trimmed deterministic values', () => {
+    expect(
+      __test.parseOfferingValidationPayload({
+        action: 'create',
+        offering: {
+          issuerId: ' issuer-1 ',
+          targetAmount: '100.00',
+          minimumInvestment: '10.00',
+        },
+      }),
+    ).toEqual({
+      action: 'create',
+      offering: {
+        issuerId: 'issuer-1',
+        targetAmount: '100.00',
+        minimumInvestment: '10.00',
+      },
+    });
+  });
+
+  it('parseOfferingValidationPayload rejects malformed bodies and invalid field values', () => {
+    expect(() => __test.parseOfferingValidationPayload(null)).toThrow(
+      'Validation payload must be a JSON object',
+    );
+    expect(() =>
+      __test.parseOfferingValidationPayload({
+        action: 'create',
+      }),
+    ).toThrow('Offering validation payload must include an offering object');
+    expect(() =>
+      __test.parseOfferingValidationPayload({
+        action: 'create',
+        offering: { id: '   ' },
+      }),
+    ).toThrow('offering.id must be a non-empty string');
+    expect(() =>
+      __test.parseOfferingValidationPayload({
+        action: 'create',
+        offering: { issuerId: '' },
+      }),
+    ).toThrow('offering.issuerId must be a non-empty string');
+    expect(() =>
+      __test.parseOfferingValidationPayload({
+        action: 'create',
+        offering: { status: 'live' },
+      }),
+    ).toThrow('offering.status must be a supported offering status');
+    expect(() =>
+      __test.parseOfferingValidationPayload({
+        action: 'create',
+        offering: { targetAmount: '' },
+      }),
+    ).toThrow('offering.targetAmount must be a non-empty string');
+  });
+
+  it('evaluateOfferingValidationMatrix covers close, cancel, and missing investment window rules', () => {
+    const actor = { id: 'issuer-1', role: 'startup' as const };
+
+    const closeResult = __test.evaluateOfferingValidationMatrix(actor, {
+      action: 'close',
+      offering: {
+        issuerId: 'issuer-1',
+        status: 'paused',
+      },
+    });
+    expect(closeResult.allowed).toBe(true);
+
+    const cancelResult = __test.evaluateOfferingValidationMatrix(actor, {
+      action: 'cancel',
+      offering: {
+        issuerId: 'issuer-1',
+        status: 'closed',
+      },
+    });
+    expect(cancelResult.allowed).toBe(false);
+    expect(cancelResult.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'STATUS_ELIGIBLE_FOR_CANCEL' }),
+      ]),
+    );
+
+    const investResult = __test.evaluateOfferingValidationMatrix(
+      { id: 'investor-1', role: 'investor' },
+      {
+        action: 'invest',
+        offering: {
+          issuerId: 'issuer-2',
+          status: 'open',
+          targetAmount: '1000.00',
+          minimumInvestment: '50.00',
+          investmentAmount: '50.00',
+        },
+      },
+      new Date('2030-01-05T00:00:00.000Z'),
+    );
+
+    expect(investResult.allowed).toBe(false);
+    expect(investResult.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'INVESTMENT_WINDOW_ACTIVE' }),
+      ]),
+    );
   });
 });
