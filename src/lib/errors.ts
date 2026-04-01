@@ -77,7 +77,7 @@ export class UniqueConstraintError extends Error {
   readonly field: string;
 
   constructor(field: string, message?: string) {
-    super(message ?? `${field} already exists`);
+    super(message ?? `Duplicate value for field: ${field}`);
     this.name = 'UniqueConstraintError';
     this.field = field;
     Object.setPrototypeOf(this, UniqueConstraintError.prototype);
@@ -128,17 +128,6 @@ export const Errors = {
       { expose: false },
     ),
 };
-
-/** Thrown when a database unique constraint (e.g. duplicate email) is violated. */
-export class UniqueConstraintError extends Error {
-  readonly field: string;
-  constructor(field: string) {
-    super(`Unique constraint violated on field: ${field}`);
-    this.name = 'UniqueConstraintError';
-    this.field = field;
-    Object.setPrototypeOf(this, UniqueConstraintError.prototype);
-  }
-}
 
 export function throwError(
   code: ErrorCode,
